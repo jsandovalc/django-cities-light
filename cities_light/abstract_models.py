@@ -5,11 +5,9 @@ import re
 import autoslug
 import pytz
 
-from six import python_2_unicode_compatible
-
 from django.db import models
 from django.db.models import lookups
-from django.utils.encoding import force_text
+from django.utils.encoding import force_str
 from django.conf import settings
 from django.utils.translation import ugettext_lazy as _
 
@@ -18,10 +16,9 @@ from unidecode import unidecode
 from .validators import timezone_validator
 from .settings import INDEX_SEARCH_NAMES, CITIES_LIGHT_APP_NAME
 
-
-__all__ = ['AbstractCountry', 'AbstractRegion', 'AbstractCity',
+__all__ = ['AbstractCountry', 'AbstractRegion',
+           'AbstractSubRegion', 'AbstractCity',
            'CONTINENT_CHOICES']
-
 
 CONTINENT_CHOICES = (
     ('OC', _('Oceania')),
@@ -42,7 +39,7 @@ def to_ascii(value):
 
     For example, 'République Françaisen' would become 'Republique Francaisen'
     """
-    return force_text(unidecode(value))
+    return force_str(unidecode(value))
 
 
 def to_search(value):
@@ -56,7 +53,25 @@ def to_search(value):
     return ALPHA_REGEXP.sub('', to_ascii(value)).lower()
 
 
-@python_2_unicode_compatible
+class ToSearchIContainsLookup(lookups.IContains):
+    """IContains lookup for ToSearchTextField."""
+
+    def get_prep_lookup(self):
+        """Return the value passed through to_search()."""
+        value = super(ToSearchIContainsLookup, self).get_prep_lookup()
+        return to_search(value)
+
+
+class ToSearchTextField(models.TextField):
+    """
+    Trivial TextField subclass that passes values through to_search
+    automatically.
+    """
+
+
+ToSearchTextField.register_lookup(ToSearchIContainsLookup)
+
+
 class Base(models.Model):
     """
     Base model with boilerplate for all models.
@@ -118,21 +133,28 @@ class AbstractRegion(Base):
         return '%s, %s' % (self.name, self.country.name)
 
 
-class ToSearchIContainsLookup(lookups.IContains):
-    """IContains lookup for ToSearchTextField."""
-
-    def get_prep_lookup(self):
-        """Return the value passed through to_search()."""
-        value = super(ToSearchIContainsLookup, self).get_prep_lookup()
-        return to_search(value)
-
-
-class ToSearchTextField(models.TextField):
+class AbstractSubRegion(Base):
     """
-    Trivial TextField subclass that passes values through to_search
-    automatically.
+    Base SubRegion model.
     """
-ToSearchTextField.register_lookup(ToSearchIContainsLookup)
+
+    display_name = models.CharField(max_length=200)
+    geoname_code = models.CharField(max_length=50, null=True, blank=True,
+                                    db_index=True)
+
+    country = models.ForeignKey(CITIES_LIGHT_APP_NAME + '.Country',
+                                on_delete=models.CASCADE)
+    region = models.ForeignKey(CITIES_LIGHT_APP_NAME + '.Region',
+                               null=True, blank=True,
+                               on_delete=models.CASCADE)
+
+    class Meta(Base.Meta):
+        verbose_name = _('SubRegion')
+        verbose_name_plural = _('SubRegions')
+        abstract = True
+
+    def get_display_name(self):
+        return '%s, %s' % (self.name, self.country.name)
 
 
 class AbstractCity(Base):
@@ -160,6 +182,9 @@ class AbstractCity(Base):
         null=True,
         blank=True)
 
+    subregion = models.ForeignKey(CITIES_LIGHT_APP_NAME + '.SubRegion',
+                                  blank=True, null=True,
+                                  on_delete=models.CASCADE)
     region = models.ForeignKey(CITIES_LIGHT_APP_NAME + '.Region', blank=True,
                                null=True, on_delete=models.CASCADE)
     country = models.ForeignKey(CITIES_LIGHT_APP_NAME + '.Country',
@@ -171,7 +196,8 @@ class AbstractCity(Base):
                                 db_index=True, validators=[timezone_validator])
 
     class Meta(Base.Meta):
-        unique_together = (('region', 'name'), ('region', 'slug'))
+        unique_together = (('region', 'subregion', 'name'),
+                           ('region', 'subregion', 'slug'))
         verbose_name_plural = _('cities')
         abstract = True
 
